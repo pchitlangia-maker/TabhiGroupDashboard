@@ -28,8 +28,7 @@ COMPETITORS_EXCEL_PATH = os.path.join(BASE_DIR, "input", "competitors.xlsx")
 RUBRIC_EXCEL_PATH = os.path.join(BASE_DIR, "config", "scoring_rubric.xlsx")
 OUTPUT_EXCEL_PATH = os.path.join(os.path.dirname(BASE_DIR), "News_Dashboard", "data", "social_media_posts.xlsx")
 
-#APIFY_API_TOKEN = "apify_api_VJxWA3U9RTuHIkQWlAcnK9sxWyXvmo1TubK1"
-APIFY_API_TOKEN = os.getenv("APIFY_API_KEY")
+APIFY_API_TOKEN = os.getenv("APIFY_API_KEY") or "apify_api_VJxWA3U9RTuHIkQWlAcnK9sxWyXvmo1TubK1"
 # Target handles map
 COMPETITOR_HANDLES = {
     "Navan": {
@@ -115,6 +114,16 @@ def run_social_pipeline():
     limit_per_platform = 5
     combined_posts = []
 
+    def is_within_24_hours(date_str):
+        if not date_str:
+            return False
+        try:
+            post_dt = pd.to_datetime(date_str).tz_localize(None)
+            cutoff = pd.Timestamp.now().tz_localize(None) - pd.Timedelta(days=1)
+            return post_dt >= cutoff
+        except Exception:
+            return True  # Fallback to True to avoid skipping in case of parsing errors
+
     # 3. Iterate and Scrape
     for idx, row in df_competitors.iterrows():
         competitor_name = row["Competitor"]
@@ -127,105 +136,149 @@ def run_social_pipeline():
             logger.warn(f"Handles not configured for '{competitor_name}'. Skipping.")
             continue
             
-        raw_posts = []
-        
-        # Scrape X/Twitter
-        if handles.get("x"):
-            x_posts = scrape_x(apify_client, username=handles["x"], limit=limit_per_platform)
-            for p in x_posts:
-                p["Platform"] = "X (Twitter)"
-                raw_posts.append(p)
-                
-        # Scrape Instagram
-        if handles.get("instagram"):
-            insta_posts = scrape_instagram(apify_client, username=handles["instagram"], limit=limit_per_platform)
-            for p in insta_posts:
-                p["Platform"] = "Instagram"
-                raw_posts.append(p)
-                
-        # Scrape LinkedIn
-        if handles.get("linkedin"):
-            linkedin_url = f"https://www.linkedin.com/company/{handles['linkedin']}"
-            li_posts = scrape_linkedin(apify_client, company_url=linkedin_url, limit=limit_per_platform)
-            for p in li_posts:
-                p["Platform"] = "LinkedIn"
-                raw_posts.append(p)
-                
-        # Scrape YouTube
-        if handles.get("youtube"):
-            yt_videos = scrape_youtube(apify_client, channel_handle=handles["youtube"], limit=limit_per_platform)
-            for p in yt_videos:
-                p["Platform"] = "YouTube"
-                raw_posts.append(p)
-                
-        # LLM Insights Engine
-        logger.info(f"Generating LLM Insights for {competitor_name} ({len(raw_posts)} total entries)...")
-        for post in raw_posts:
-            platform = post["Platform"]
-            post_text = post.get("Post Text") or ""
-            image_url = post.get("Image URL") or ""
-            image_text = post.get("Image Text") or ""
-            video_url = post.get("Video URL") or ""
+        try:
+            raw_posts = []
             
-            if platform == "YouTube":
-                video_title = post_text.split("\n\n")[0]
-                ai_insights = analyze_video_with_llm(
-                    openai_client=openai_client,
-                    model_name=llm_model,
-                    video_url=video_url,
-                    video_title=video_title,
-                    categories_list=categories_list
-                )
-                video_transcript = ai_insights.get("transcript", "")
-            else:
-                video_transcript = post.get("Video Transcript") or ""
-                ai_insights = analyze_post_with_llm(
-                    openai_client=openai_client,
-                    model_name=llm_model,
-                    platform=platform,
-                    competitor=competitor_name,
-                    post_text=post_text,
-                    image_text=image_text,
-                    video_transcript=video_transcript,
-                    categories_list=categories_list
-                )
+            # Scrape X/Twitter
+            if handles.get("x"):
+                x_posts = scrape_x(apify_client, username=handles["x"], limit=limit_per_platform)
+                for p in x_posts:
+                    p["Platform"] = "X (Twitter)"
+                    raw_posts.append(p)
+                    
+            # Scrape Instagram
+            if handles.get("instagram"):
+                insta_posts = scrape_instagram(apify_client, username=handles["instagram"], limit=limit_per_platform)
+                for p in insta_posts:
+                    p["Platform"] = "Instagram"
+                    raw_posts.append(p)
+                    
+            # Scrape LinkedIn
+            if handles.get("linkedin"):
+                linkedin_url = f"https://www.linkedin.com/company/{handles['linkedin']}"
+                li_posts = scrape_linkedin(apify_client, company_url=linkedin_url, limit=limit_per_platform)
+                for p in li_posts:
+                    p["Platform"] = "LinkedIn"
+                    raw_posts.append(p)
+                    
+            # Scrape YouTube
+            if handles.get("youtube"):
+                yt_videos = scrape_youtube(apify_client, channel_handle=handles["youtube"], limit=limit_per_platform)
+                for p in yt_videos:
+                    p["Platform"] = "YouTube"
+                    raw_posts.append(p)
+                    
+            # Filter posts for past 24 hours
+            filtered_raw_posts = []
+            for post in raw_posts:
+                date_str = post.get("Date Created") or post.get("timestamp") or post.get("date")
+                if is_within_24_hours(date_str):
+                    filtered_raw_posts.append(post)
+            
+            logger.info(f"Filtered down to {len(filtered_raw_posts)} posts from the last 24 hours (originally {len(raw_posts)}).")
+            
+            # LLM Insights Engine
+            if filtered_raw_posts:
+                logger.info(f"Generating LLM Insights for {competitor_name} ({len(filtered_raw_posts)} entries)...")
+                for post in filtered_raw_posts:
+                    platform = post["Platform"]
+                    post_text = post.get("Post Text") or ""
+                    image_url = post.get("Image URL") or ""
+                    image_text = post.get("Image Text") or ""
+                    video_url = post.get("Video URL") or ""
+                    
+                    if platform == "YouTube":
+                        video_title = post_text.split("\n\n")[0]
+                        ai_insights = analyze_video_with_llm(
+                            openai_client=openai_client,
+                            model_name=llm_model,
+                            video_url=video_url,
+                            video_title=video_title,
+                            categories_list=categories_list
+                        )
+                        video_transcript = ai_insights.get("transcript", "")
+                    else:
+                        video_transcript = post.get("Video Transcript") or ""
+                        ai_insights = analyze_post_with_llm(
+                            openai_client=openai_client,
+                            model_name=llm_model,
+                            platform=platform,
+                            competitor=competitor_name,
+                            post_text=post_text,
+                            image_text=image_text,
+                            video_transcript=video_transcript,
+                            categories_list=categories_list
+                        )
 
-            # Consolidate standard structure
-            combined_posts.append({
-                "Base_Company": base_company,
-                "Competitor": competitor_name,
-                "Platform": platform,
-                "Author/Handle": post.get("Author/Handle") or "",
-                "Date Created": post.get("Date Created") or post.get("timestamp") or "",
-                "Post Text": post_text,
-                "Image URL": image_url,
-                "Image Text": image_text,
-                "Video URL": video_url,
-                "Video Transcript": video_transcript,
-                "Post URL": post.get("Post URL") or "",
-                "Sentiment": ai_insights.get("sentiment", "Neutral"),
-                "Category": ai_insights.get("category", "General Industry News"),
-                "Alert Level": ai_insights.get("alert_level", "Low"),
-                "AI Summary": ai_insights.get("summary", "Failed to analyze post.")
-            })
+                    # Consolidate standard structure
+                    combined_posts.append({
+                        "Base_Company": base_company,
+                        "Competitor": competitor_name,
+                        "Platform": platform,
+                        "Author/Handle": post.get("Author/Handle") or "",
+                        "Date Created": post.get("Date Created") or post.get("timestamp") or "",
+                        "Post Text": post_text,
+                        "Image URL": image_url,
+                        "Image Text": image_text,
+                        "Video URL": video_url,
+                        "Video Transcript": video_transcript,
+                        "Post URL": post.get("Post URL") or "",
+                        "Sentiment": ai_insights.get("sentiment", "Neutral"),
+                        "Category": ai_insights.get("category", "General Industry News"),
+                        "Alert Level": ai_insights.get("alert_level", "Low"),
+                        "AI Summary": ai_insights.get("summary", "Failed to analyze post.")
+                    })
+        except Exception as e:
+            logger.error(f"❌ Error processing competitor '{competitor_name}': {str(e)}")
 
     # 4. Save results to Excel sheet
     logger.info(f"Writing results to '{OUTPUT_EXCEL_PATH}'...")
     write_to_excel_safe(OUTPUT_EXCEL_PATH, combined_posts)
 
 def write_to_excel_safe(output_file, combined_data):
+    if not combined_data:
+        logger.warn("⚠️ Warning: No new social media posts were fetched in this run. Bypassing write to protect existing data!")
+        return
     try:
-        df = pd.DataFrame(combined_data)
+        # 1. Load existing data if file exists
+        if os.path.exists(output_file):
+            try:
+                df_existing = pd.read_excel(output_file, sheet_name="Social_Media_Insights")
+                existing_keys = set(df_existing["Post URL"].dropna().astype(str).str.strip().tolist())
+            except Exception:
+                df_existing = pd.DataFrame()
+                existing_keys = set()
+        else:
+            df_existing = pd.DataFrame()
+            existing_keys = set()
+
+        # 2. Filter out duplicates based on Post URL
+        new_unique_data = []
+        for item in combined_data:
+            post_url = str(item.get("Post URL", "")).strip()
+            if not post_url or post_url not in existing_keys:
+                new_unique_data.append(item)
+                if post_url:
+                    existing_keys.add(post_url)
+        
+        if not new_unique_data:
+            logger.info("ℹ️ All fetched posts are already present in the database. No new records to append.")
+            return
+
+        # 3. Concatenate and save
+        df_new = pd.DataFrame(new_unique_data)
+        df_final = pd.concat([df_existing, df_new], ignore_index=True)
+        
         desired_columns = [
             "Base_Company", "Competitor", "Platform", "Author/Handle", "Date Created",
             "Post Text", "Image URL", "Image Text", "Video URL", "Video Transcript",
             "Post URL", "Sentiment", "Category", "Alert Level", "AI Summary"
         ]
-        df = df.reindex(columns=desired_columns)
+        df_final = df_final.reindex(columns=desired_columns)
         
         with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
-            df.to_excel(writer, sheet_name="Social_Media_Insights", index=False)
-            logger.info("Successfully wrote all rows to sheet: Social_Media_Insights")
+            df_final.to_excel(writer, sheet_name="Social_Media_Insights", index=False)
+            logger.info(f"Successfully appended {len(new_unique_data)} new rows to sheet: Social_Media_Insights (Total rows: {len(df_final)})")
         logger.info("Competitor Social Media Pipeline completed successfully.")
     except PermissionError:
         fallback_file = output_file.replace(".xlsx", "_new.xlsx")

@@ -13,14 +13,27 @@ def scrape_youtube(client, channel_handle, limit=5):
     
     try:
         run = client.actor("streamers/youtube-scraper").call(run_input=run_input)
-        if run.status != "SUCCEEDED":
-            print(f"⚠️ Warning: YouTube run finished with status '{run.status}'.")
+        run_status = run.get("status")
+        if run_status != "SUCCEEDED":
+            print(f"⚠️ Warning: YouTube run finished with status '{run_status}'.")
         
-        raw_items = list(client.dataset(run.default_dataset_id).iterate_items())
+        raw_items = list(client.dataset(run.get("defaultDatasetId")).iterate_items())
         print(f"✅ Successfully retrieved {len(raw_items)} videos from YouTube ({clean_handle}).")
         
         processed_videos = []
+        import pandas as pd
         for item in raw_items:
+            date_created = item.get("date") or item.get("uploadedAt")
+            if date_created:
+                try:
+                    dt = pd.to_datetime(date_created).tz_localize(None)
+                    cutoff = pd.Timestamp.now().tz_localize(None) - pd.Timedelta(days=1)
+                    if dt < cutoff:
+                        print("Reached YouTube video older than 24 hours. Stopping scraper loop.")
+                        break
+                except Exception:
+                    pass
+
             processed_videos.append({
                 "Competitor": channel_handle,
                 "Platform": "YouTube",

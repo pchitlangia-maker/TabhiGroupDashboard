@@ -21,8 +21,8 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 
 # Initialize OpenAI client
 client = OpenAI(
-    base_url="https://ollama.com/v1",
-    api_key=os.getenv("OLLAMA_API_KEY", "dummy_key")
+    base_url=os.getenv("OLLAMA_BASE_URL", "https://ollama.com/v1"),
+    api_key=os.getenv("OLLAMA_API_KEY")
 )
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-oss:20b-cloud")
 

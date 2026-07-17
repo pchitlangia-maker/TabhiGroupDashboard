@@ -181,13 +181,6 @@ def run_pipeline():
         
     # 9. Write to Excel Database
     append_news_articles(enriched_articles)
-    
-    # 10. Run Competitor Social Media Pipeline
-    try:
-        from src.social_media.social_orchestrator import run_social_pipeline
-        run_social_pipeline()
-    except Exception as e:
-        logger.error(f"Failed to execute social media pipeline: {str(e)}")
 
     # Summary Log
     logger.info("=========================================")
