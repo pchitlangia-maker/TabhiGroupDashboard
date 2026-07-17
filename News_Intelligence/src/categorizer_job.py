@@ -255,7 +255,12 @@ def generate_ceo_insights(db_file, brand, scorer):
                         )
                         content = response.choices[0].message.content.strip()
                         
-                        # Clean json wrapping
+                        # Clean json wrapping and extract raw JSON list/object
+                        content = content.strip()
+                        match = re.search(r"\[.*\]|\{.*\}", content, re.DOTALL)
+                        if match:
+                            content = match.group(0)
+                            
                         if content.startswith("```json"):
                             content = content[7:]
                         if content.startswith("```"):
