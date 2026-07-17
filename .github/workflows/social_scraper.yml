@@ -40,5 +40,5 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add News_Dashboard/data/social_media_posts.xlsx
           git diff-index --quiet HEAD || git commit -m "Auto-update competitor social media database"
-          git pull --rebase
+          git pull --rebase -X ours
           git push
