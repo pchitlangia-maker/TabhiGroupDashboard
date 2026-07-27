@@ -581,6 +581,52 @@ export class UIManager {
     
     const allBriefs = this.app.dataManager.brandVideoData[this.activeBrand] || [];
     
+    // Find unique platforms in available posts for this brand
+    const availablePlatforms = new Set();
+    allBriefs.forEach(b => {
+      if (b.source) {
+        availablePlatforms.add(b.source.toLowerCase());
+      }
+    });
+
+    // Reset filter to 'ALL' if the active filter platform is not present in this brand's posts
+    if (this.activeSocialPlatformFilter !== 'ALL') {
+      const activeKey = this.activeSocialPlatformFilter.toLowerCase();
+      if (!availablePlatforms.has(activeKey)) {
+        this.activeSocialPlatformFilter = 'ALL';
+      }
+    }
+
+    // Rebuild platform filters dynamically in the UI
+    const filterRow = document.querySelector('.social-filter-row');
+    if (filterRow) {
+      const platformOptions = [
+        { key: 'all', label: 'ALL', id: 'social-filter-ALL' },
+        { key: 'x (twitter)', label: '𝕏 (TWITTER)', id: 'social-filter-X' },
+        { key: 'linkedin', label: '💼 LINKEDIN', id: 'social-filter-LINKEDIN' },
+        { key: 'instagram', label: '📸 INSTAGRAM', id: 'social-filter-INSTAGRAM' },
+        { key: 'youtube', label: '🎥 YOUTUBE', id: 'social-filter-YOUTUBE' }
+      ];
+      
+      let html = '';
+      platformOptions.forEach(opt => {
+        if (opt.key === 'all' || availablePlatforms.has(opt.key)) {
+          const isActive = (opt.key === 'all' && this.activeSocialPlatformFilter === 'ALL') || 
+                           (this.activeSocialPlatformFilter.toLowerCase() === opt.key);
+          const activeClass = isActive ? 'active' : '';
+          
+          let filterValue = 'ALL';
+          if (opt.key === 'x (twitter)') filterValue = 'X (Twitter)';
+          else if (opt.key === 'linkedin') filterValue = 'LinkedIn';
+          else if (opt.key === 'instagram') filterValue = 'Instagram';
+          else if (opt.key === 'youtube') filterValue = 'YouTube';
+          
+          html += `<div class="filter-chip ${activeClass}" id="${opt.id}" onclick="window.app.uiManager.setSocialPlatformFilter('${filterValue}')">${opt.label}</div>`;
+        }
+      });
+      filterRow.innerHTML = html;
+    }
+
     // Map with original indices for safe routing in openVideo
     const mappedBriefs = allBriefs.map((b, originalIndex) => ({ ...b, originalIndex }));
     
