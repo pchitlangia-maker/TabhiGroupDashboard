@@ -15,11 +15,23 @@ from config.settings import BASE_DIR
 from src.utils import logger
 
 # 2. Initialize OpenAI client directly
+base_url = os.getenv("OLLAMA_BASE_URL", "https://ollama.com/v1")
+if base_url:
+    base_url = base_url.strip("'\"")
+
+api_key = os.getenv("OLLAMA_API_KEY")
+if api_key:
+    api_key = api_key.strip("'\"")
+
 openai_client = OpenAI(
-    base_url=os.getenv("OLLAMA_BASE_URL", "https://ollama.com/v1"),
-    api_key=os.getenv("OLLAMA_API_KEY")
+    base_url=base_url,
+    api_key=api_key
 )
-llm_model = os.getenv("MODEL_NAME", "gpt-oss:20b-cloud")
+
+model_name_env = os.getenv("MODEL_NAME")
+if model_name_env:
+    model_name_env = model_name_env.strip("'\"")
+llm_model = model_name_env or "gpt-oss:20b-cloud"
 
 # Import platform scrapers
 from src.social_media.x_scraper import scrape_x
