@@ -127,26 +127,31 @@ def run_social_pipeline():
         logger.error(f"Error reading competitors.xlsx: {str(e)}")
         return
 
+    # 3. Load existing database to find latest recorded timestamps for each competitor & platform
+    latest_timestamps = {}
+    if os.path.exists(OUTPUT_EXCEL_PATH):
+        try:
+            df_existing = pd.read_excel(OUTPUT_EXCEL_PATH, sheet_name="Social_Media_Insights")
+            if not df_existing.empty and "Date Created" in df_existing.columns:
+                df_existing["Parsed_Date"] = pd.to_datetime(df_existing["Date Created"], errors='coerce')
+                # Group by Competitor and Platform to get max Date Created
+                grouped = df_existing.dropna(subset=["Parsed_Date", "Competitor", "Platform"]).groupby(["Competitor", "Platform"])
+                for (comp, plat), group in grouped:
+                    latest_timestamps[(str(comp).strip(), str(plat).strip())] = group["Parsed_Date"].max()
+                logger.info(f"Loaded latest timestamps for {len(latest_timestamps)} competitor-platform pairs from database.")
+        except Exception as e:
+            logger.warn(f"Could not load existing database for incremental parsing: {e}")
+
     apify_client = ApifyClient(APIFY_API_TOKEN)
     logger.info(f"🤖 Using active LLM connection with model {llm_model}...")
 
     limit_per_platform = 5
     combined_posts = []
 
-    def is_within_24_hours(date_str):
-        if not date_str:
-            return False
-        try:
-            post_dt = pd.to_datetime(date_str).tz_localize(None)
-            cutoff = pd.Timestamp.now().tz_localize(None) - pd.Timedelta(days=1)
-            return post_dt >= cutoff
-        except Exception:
-            return True  # Fallback to True to avoid skipping in case of parsing errors
-
-    # 3. Iterate and Scrape
+    # 4. Iterate and Scrape
     for idx, row in df_competitors.iterrows():
-        competitor_name = row["Competitor"]
-        base_company = row["Base"]
+        competitor_name = str(row["Competitor"]).strip()
+        base_company = str(row["Base"]).strip()
         
         logger.info(f"Processing Competitor [{competitor_name}] competing with [{base_company}]")
         
@@ -158,95 +163,127 @@ def run_social_pipeline():
         try:
             raw_posts = []
             
-            # Scrape X/Twitter
+            # Scrape X/Twitter (Isolated)
             if handles.get("x"):
-                x_posts = scrape_x(apify_client, username=handles["x"], limit=limit_per_platform)
-                for p in x_posts:
-                    p["Platform"] = "X (Twitter)"
-                    raw_posts.append(p)
+                try:
+                    x_posts = scrape_x(apify_client, username=handles["x"], limit=limit_per_platform)
+                    for p in x_posts:
+                        p["Platform"] = "X (Twitter)"
+                        raw_posts.append(p)
+                except Exception as e:
+                    logger.error(f"Error scraping X for '{competitor_name}': {str(e)}")
                     
-            # Scrape Instagram
+            # Scrape Instagram (Isolated)
             if handles.get("instagram"):
-                insta_posts = scrape_instagram(apify_client, username=handles["instagram"], limit=limit_per_platform)
-                for p in insta_posts:
-                    p["Platform"] = "Instagram"
-                    raw_posts.append(p)
+                try:
+                    insta_posts = scrape_instagram(apify_client, username=handles["instagram"], limit=limit_per_platform)
+                    for p in insta_posts:
+                        p["Platform"] = "Instagram"
+                        raw_posts.append(p)
+                except Exception as e:
+                    logger.error(f"Error scraping Instagram for '{competitor_name}': {str(e)}")
                     
-            # Scrape LinkedIn
+            # Scrape LinkedIn (Isolated)
             if handles.get("linkedin"):
-                linkedin_url = f"https://www.linkedin.com/company/{handles['linkedin']}"
-                li_posts = scrape_linkedin(apify_client, company_url=linkedin_url, limit=limit_per_platform)
-                for p in li_posts:
-                    p["Platform"] = "LinkedIn"
-                    raw_posts.append(p)
+                try:
+                    linkedin_url = f"https://www.linkedin.com/company/{handles['linkedin']}"
+                    li_posts = scrape_linkedin(apify_client, company_url=linkedin_url, limit=limit_per_platform)
+                    for p in li_posts:
+                        p["Platform"] = "LinkedIn"
+                        raw_posts.append(p)
+                except Exception as e:
+                    logger.error(f"Error scraping LinkedIn for '{competitor_name}': {str(e)}")
                     
-            # Scrape YouTube
+            # Scrape YouTube (Isolated)
             if handles.get("youtube"):
-                yt_videos = scrape_youtube(apify_client, channel_handle=handles["youtube"], limit=limit_per_platform)
-                for p in yt_videos:
-                    p["Platform"] = "YouTube"
-                    raw_posts.append(p)
+                try:
+                    yt_videos = scrape_youtube(apify_client, channel_handle=handles["youtube"], limit=limit_per_platform)
+                    for p in yt_videos:
+                        p["Platform"] = "YouTube"
+                        raw_posts.append(p)
+                except Exception as e:
+                    logger.error(f"Error scraping YouTube for '{competitor_name}': {str(e)}")
                     
-            # Filter posts for past 24 hours
+            # Filter posts: incremental (since last scraped timestamp) or fallback (24 hours)
             filtered_raw_posts = []
             for post in raw_posts:
+                platform = post["Platform"]
                 date_str = post.get("Date Created") or post.get("timestamp") or post.get("date")
-                if is_within_24_hours(date_str):
+                if not date_str:
+                    continue
+                try:
+                    post_dt = pd.to_datetime(date_str).tz_localize(None)
+                    
+                    last_ts = latest_timestamps.get((competitor_name, platform))
+                    if last_ts:
+                        last_ts = last_ts.tz_localize(None)
+                        is_new = post_dt > last_ts
+                    else:
+                        cutoff = pd.Timestamp.now().tz_localize(None) - pd.Timedelta(days=1)
+                        is_new = post_dt >= cutoff
+                    
+                    if is_new:
+                        filtered_raw_posts.append(post)
+                except Exception as ex:
+                    logger.warn(f"Date parsing failed for post on {platform}: {date_str}. Error: {ex}. Including post by default.")
                     filtered_raw_posts.append(post)
             
-            logger.info(f"Filtered down to {len(filtered_raw_posts)} posts from the last 24 hours (originally {len(raw_posts)}).")
+            logger.info(f"Filtered down to {len(filtered_raw_posts)} posts (originally {len(raw_posts)}).")
             
             # LLM Insights Engine
             if filtered_raw_posts:
                 logger.info(f"Generating LLM Insights for {competitor_name} ({len(filtered_raw_posts)} entries)...")
                 for post in filtered_raw_posts:
-                    platform = post["Platform"]
-                    post_text = post.get("Post Text") or ""
-                    image_url = post.get("Image URL") or ""
-                    image_text = post.get("Image Text") or ""
-                    video_url = post.get("Video URL") or ""
-                    
-                    if platform == "YouTube":
-                        video_title = post_text.split("\n\n")[0]
-                        ai_insights = analyze_video_with_llm(
-                            openai_client=openai_client,
-                            model_name=llm_model,
-                            video_url=video_url,
-                            video_title=video_title,
-                            categories_list=categories_list
-                        )
-                        video_transcript = ai_insights.get("transcript", "")
-                    else:
-                        video_transcript = post.get("Video Transcript") or ""
-                        ai_insights = analyze_post_with_llm(
-                            openai_client=openai_client,
-                            model_name=llm_model,
-                            platform=platform,
-                            competitor=competitor_name,
-                            post_text=post_text,
-                            image_text=image_text,
-                            video_transcript=video_transcript,
-                            categories_list=categories_list
-                        )
+                    try:
+                        platform = post["Platform"]
+                        post_text = post.get("Post Text") or ""
+                        image_url = post.get("Image URL") or ""
+                        image_text = post.get("Image Text") or ""
+                        video_url = post.get("Video URL") or ""
+                        
+                        if platform == "YouTube":
+                            video_title = post_text.split("\n\n")[0]
+                            ai_insights = analyze_video_with_llm(
+                                openai_client=openai_client,
+                                model_name=llm_model,
+                                video_url=video_url,
+                                video_title=video_title,
+                                categories_list=categories_list
+                            )
+                            video_transcript = ai_insights.get("transcript", "")
+                        else:
+                            video_transcript = post.get("Video Transcript") or ""
+                            ai_insights = analyze_post_with_llm(
+                                openai_client=openai_client,
+                                model_name=llm_model,
+                                platform=platform,
+                                competitor=competitor_name,
+                                post_text=post_text,
+                                image_text=image_text,
+                                video_transcript=video_transcript,
+                                categories_list=categories_list
+                            )
 
-                    # Consolidate standard structure
-                    combined_posts.append({
-                        "Base_Company": base_company,
-                        "Competitor": competitor_name,
-                        "Platform": platform,
-                        "Author/Handle": post.get("Author/Handle") or "",
-                        "Date Created": post.get("Date Created") or post.get("timestamp") or "",
-                        "Post Text": post_text,
-                        "Image URL": image_url,
-                        "Image Text": image_text,
-                        "Video URL": video_url,
-                        "Video Transcript": video_transcript,
-                        "Post URL": post.get("Post URL") or "",
-                        "Sentiment": ai_insights.get("sentiment", "Neutral"),
-                        "Category": ai_insights.get("category", "General Industry News"),
-                        "Alert Level": ai_insights.get("alert_level", "Low"),
-                        "AI Summary": ai_insights.get("summary", "Failed to analyze post.")
-                    })
+                        # Consolidate standard structure
+                        combined_posts.append({
+                            "Base_Company": base_company,
+                            "Competitor": competitor_name,
+                            "Platform": platform,
+                            "Author/Handle": post.get("Author/Handle") or "",
+                            "Date Created": post.get("Date Created") or post.get("timestamp") or "",
+                            "Post Text": post_text,
+                            "Image URL": image_url,
+                            "Image Text": image_text,
+                            "Video URL": video_url,
+                            "Video Transcript": video_transcript,
+                            "Post URL": post.get("Post URL") or "",
+                            "Sentiment": ai_insights.get("sentiment", "Neutral"),
+                            "Category": ai_insights.get("category", "General Industry News"),
+                            "Alert Level": ai_insights.get("alert_level", "Low"),
+                            "AI Summary": ai_insights.get("summary", "Failed to analyze post.")
+                        })
+                    except Exception as post_err:
+                        logger.error(f"Error processing post from {competitor_name} on {platform}: {str(post_err)}")
         except Exception as e:
             logger.error(f"❌ Error processing competitor '{competitor_name}': {str(e)}")
 
