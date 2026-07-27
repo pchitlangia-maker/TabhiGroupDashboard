@@ -32,12 +32,18 @@ header {
 }
 
 .logo-mark {
-  width: 32px;
   height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+}
+
+.logo-mark svg,
+.logo-mark img {
+  height: 100%;
+  width: auto;
+  max-width: 120px;
 }
 
 .logo-text-group {
